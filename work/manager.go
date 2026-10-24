@@ -85,6 +85,10 @@ type WorkManager struct {
 	cachedPrevHdrHex            string
 	cachedPrevHash              string
 	cachedAncestorsHex          []string
+
+	// OnUnlinkedTemplateFunc is called with the sending peer's ID when a light-mode
+	// template is rejected because the local sharechain is behind.
+	OnUnlinkedTemplateFunc func(peerID string)
 }
 
 func NewWorkManager(rpcClient *rpc.Client, sc *ShareChain) *WorkManager {
@@ -703,7 +707,7 @@ func (wm *WorkManager) verifyHeader80(rawHex string, expectedHash string, refDif
 	return &hdr, true
 }
 
-func (wm *WorkManager) verifyTemplatePrevHeader(t *BlockTemplate) bool {
+func (wm *WorkManager) verifyTemplatePrevHeader(peerID string, t *BlockTemplate) bool {
 	bInt, err := strconv.ParseUint(t.Bits, 16, 32)
 	if err != nil || bInt == 0 {
 		return false
@@ -715,6 +719,7 @@ func (wm *WorkManager) verifyTemplatePrevHeader(t *BlockTemplate) bool {
 	refBits := wm.ShareChain.GetRecentNetworkBits()
 	if refBits == 0 {
 		// Wait until ShareChain has verified shares before accepting templates
+		wm.requestSyncForTemplate(peerID)
 		return false
 	}
 	refDiff := TargetToDiff(blockchain.CompactToBig(refBits))
@@ -755,12 +760,19 @@ func (wm *WorkManager) verifyTemplatePrevHeader(t *BlockTemplate) bool {
 	}
 	if !linked {
 		logging.Warnf("Light Mode: Rejected template: PreviousBlock %s does not link to verified ShareChain", t.PreviousBlockHash[:12])
+		wm.requestSyncForTemplate(peerID)
 		return false
 	}
 	wm.TemplateMutex.Lock()
 	wm.verifiedBlocks[t.PreviousBlockHash] = true
 	wm.TemplateMutex.Unlock()
 	return true
+}
+
+func (wm *WorkManager) requestSyncForTemplate(peerID string) {
+	if wm.OnUnlinkedTemplateFunc != nil {
+		wm.OnUnlinkedTemplateFunc(peerID)
+	}
 }
 
 func intersectTemplateTxs(a, b []BlockTemplateTx) ([]BlockTemplateTx, int64) {
@@ -844,7 +856,7 @@ func (wm *WorkManager) ApplyRemoteTemplateJSON(peerID string, voterKey string, r
 	if fees > sub {
 		fees = sub
 	}
-	if !wm.verifyTemplatePrevHeader(&t) {
+	if !wm.verifyTemplatePrevHeader(peerID, &t) {
 		return false
 	}
 	wm.TemplateMutex.Lock()
