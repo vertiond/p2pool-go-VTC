@@ -1,0 +1,143 @@
+name: build
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - '*'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pure Go, no cgo needed, so the binaries are static and need no C toolchain
+  CGO_ENABLED: '0'
+  GOARCH: amd64
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            runner: windows-latest
+            binary: p2pool-go-vtc.exe
+          - os: linux
+            runner: ubuntu-latest
+            binary: p2pool-go-vtc
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      # go.sum is the integrity record of every Go module the build uses. Fail when it or
+      # go.mod is missing something the code needs, or doesn't match what is committed
+      - name: Check go.mod and go.sum
+        if: matrix.os == 'linux'
+        run: |
+          go mod verify
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Determine version
+        id: version
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            name="${GITHUB_REF_NAME}"
+            version="${GITHUB_REF_NAME}-g${short_sha}"
+          else
+            name="dev-${short_sha}"
+            version="dev-g${short_sha}"
+          fi
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # The node serves its dashboard from web/static next to the executable,
+      # so it ships in the zip alongside the binary
+      - name: Build and package
+        id: build
+        env:
+          LDFLAGS: -X github.com/CADMonkey21/p2pool-go-VTC/config.Version=${{ steps.version.outputs.version }}
+          NAME: ${{ steps.version.outputs.name }}
+          BINARY: ${{ matrix.binary }}
+          GOOS: ${{ matrix.os }}
+        run: |
+          mkdir -p stage/web dist
+          go build -trimpath -ldflags "$LDFLAGS" -o "stage/${BINARY}" .
+          cp -r web/static stage/web/
+          cp LICENSE README.md stage/
+          zipname="p2pool-go-vtc-${NAME}-${GOOS}-x64.zip"
+          if [ "$GOOS" = windows ]; then
+            (cd stage && 7z a -tzip "../dist/${zipname}" "${BINARY}" web LICENSE README.md)
+          else
+            (cd stage && zip -r "../dist/${zipname}" "${BINARY}" web LICENSE README.md)
+          fi
+          echo "zip=dist/${zipname}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            ${{ steps.build.outputs.zip }}
+            stage/${{ matrix.binary }}
+
+      # Upload the zip as-is so the download isn't a zip inside a zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          path: ${{ steps.build.outputs.zip }}
+          archive: false
+          if-no-files-found: error
+
+  release:
+    name: draft release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: p2pool-go-vtc-*.zip
+          path: dist
+          merge-multiple: true
+          # The artifacts are already zips; keep them as they are
+          skip-decompress: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=(--draft --generate-notes --verify-tag --title "$TAG")
+          case "$TAG" in
+            *alpha*|*beta*|*rc*) flags+=(--prerelease) ;;
+          esac
+          ls -l dist
+          (cd dist && sha256sum *.zip > SHA256SUMS)
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}" dist/*.zip dist/SHA256SUMS
