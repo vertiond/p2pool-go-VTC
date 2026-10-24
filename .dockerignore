@@ -1,0 +1,15 @@
+.git
+.github
+.claude
+*.dat
+*.log
+*.save
+config.yaml
+peer.key
+sharechain.json
+blocks.json
+p2pool-go-vtc
+p2pool-go-vtc.exe
+data
+dist
+stage

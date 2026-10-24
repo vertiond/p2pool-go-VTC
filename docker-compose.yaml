@@ -1,0 +1,25 @@
+# Runs the node only; point it at your own vertcoind.
+# ./data holds config.yaml (optional), peer.key, sharechain.json, blocks.json and p2pool.log.
+# Set VERTHASH_DAT to your verthash.dat; it is mounted read-only, not copied.
+# Empty settings fall back to config.yaml, then the built-in defaults.
+services:
+  p2pool:
+    build: .
+    image: p2pool-go-vtc
+    restart: unless-stopped
+    ports:
+      - "9172:9172"
+      - "9348:9348"
+    volumes:
+      - ./data:/data
+      - ${VERTHASH_DAT:-./verthash.dat}:/data/verthash.dat:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - -verthash=/data/verthash.dat
+      - -rpchost=${VTC_RPC_HOST:-host.docker.internal}
+      - -rpcport=${VTC_RPC_PORT:-0}
+      - -u=${VTC_RPC_USER:-}
+      - -p=${VTC_RPC_PASS:-}
+      - -pooladdr=${POOL_ADDRESS:-}
+      - -loglevel=${LOG_LEVEL:-}

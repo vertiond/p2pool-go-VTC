@@ -94,6 +94,18 @@ The pool is configured using a single `config.yaml` file (copied from `config.ex
    ```
    Point your Verthash miner to `stratum+tcp://<your-node-ip>:9172` with your Vertcoin wallet address as the username, and open `http://<your-node-ip>:9172` in your browser to view the live dashboard.
 
+### Make Targets
+`make build` (static, stripped `p2pool-go-vtc`, as in the release workflow), `make test`, `make test-race`, `make vet`, `make fmt`, `make fuzz` (each fuzz target for `FUZZTIME`, default `30s`) and `make docker`.
+
+### Docker
+The image runs the node as a non-root user (UID 1000) with `/data` as its data directory and working directory, so `config.yaml`, `peer.key`, `sharechain.json`, `blocks.json` and `p2pool.log` live there. `verthash.dat` (~1.2 GB) is not in the image; mount it at `/data/verthash.dat`. `docker-compose.yaml` runs the node alone against your own `vertcoind`:
+```bash
+mkdir data && sudo chown 1000:1000 data       # optionally put config.yaml in data/
+VERTHASH_DAT=$HOME/.vertcoin/verthash.dat VTC_RPC_USER=user VTC_RPC_PASS=pass \
+  POOL_ADDRESS=vtc1... docker compose up -d --build
+```
+`VTC_RPC_HOST` defaults to `host.docker.internal` (the Docker host); `vertcoind` must then accept RPC from the container, e.g. `rpcbind=0.0.0.0` and `rpcallowip=172.16.0.0/12`. Unset RPC settings fall back to `config.yaml`. Ports `9172` (Stratum / Web UI / `/metrics`) and `9348` (P2P) are published. For a daemon-less node add `-light` to `command:`.
+
 ### Command-Line Flags & OCM Readiness API
 ```bash
 ./p2pool-go-vtc -light -datadir /path/to/data -stratum 9172 -p2p 9348 -verthash /path/to/verthash.dat -loglevel info
