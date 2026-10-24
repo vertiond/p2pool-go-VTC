@@ -188,8 +188,14 @@ func main() {
 	defer p2pNode.Close()
 
 	// Wire bidirectional P2P ShareChain and Blocks synchronization
+	// A light node only needs to catch up from its peers, so it sends just its newest
+	// shares instead of uploading the whole window before the peer replies.
+	syncShareCount := 10000
+	if config.Active.LightMode {
+		syncShareCount = 100
+	}
 	p2pNode.GetSyncDataFunc = func() ([]byte, []byte) {
-		shares := sc.GetSharesForSync(10000)
+		shares := sc.GetSharesForSync(syncShareCount)
 		sBytes, _ := json.Marshal(shares)
 		bBytes := workManager.GetPersistedBlocksJSON()
 		return sBytes, bBytes
@@ -207,6 +213,7 @@ func main() {
 	}
 	if config.Active.LightMode {
 		p2pNode.OnTemplateFunc = func(p string, vk string, b []byte) { workManager.ApplyRemoteTemplateJSON(p, vk, b) }
+		workManager.OnUnlinkedTemplateFunc = p2pNode.RequestSync
 		logging.Infof("Running in daemon-less LIGHT MODE (receiving block templates via P2P)")
 		go func() {
 			for {
@@ -223,11 +230,12 @@ func main() {
 		b, _ := json.Marshal(sc.GetSharesByHashWithParents(hashes, parents))
 		return b
 	}
-	p2pNode.OnSyncDataFunc = func(sharesJSON []byte, blocksJSON []byte) {
+	p2pNode.OnSyncDataFunc = func(sharesJSON []byte, blocksJSON []byte) int {
+		added := 0
 		if len(sharesJSON) > 0 {
 			var ps []work.Share
 			if json.Unmarshal(sharesJSON, &ps) == nil && len(ps) > 0 {
-				if added := sc.AddShares(ps); added > 0 {
+				if added = sc.AddShares(ps); added > 0 {
 					logging.Successf("P2P Sync: Hydrated %d verified shares from peer!", added)
 					_ = sc.Commit()
 				}
@@ -242,6 +250,7 @@ func main() {
 				logging.Successf("P2P Sync: Hydrated %d missing found block(s) from peer!", ab)
 			}
 		}
+		return added
 	}
 	stratumSrv := stratum.NewStratumServer(workManager, p2pNode)
 	go p2pNode.Bootstrap(config.Active.Peers)
