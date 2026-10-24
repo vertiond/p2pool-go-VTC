@@ -118,6 +118,12 @@ func logStats(p2pNode *p2p.Node, sc *work.ShareChain, ss *stratum.StratumServer)
 	}
 }
 
+// splitPort shares one listener between HTTP, matched by request method, and Stratum.
+func splitPort(l net.Listener) (cmux.CMux, net.Listener, net.Listener) {
+	m := cmux.New(l)
+	return m, m.Match(cmux.HTTP1Fast()), m.Match(cmux.Any())
+}
+
 // defaultMemoryLimit makes the GC collect bursts from saves and peer syncs instead of
 // letting the heap double.
 const defaultMemoryLimit = 160 << 20
@@ -295,9 +301,7 @@ func main() {
 		logging.Fatalf("MAIN: Unable to listen on %s: %v", addr, err)
 	}
 
-	m := cmux.New(baseListener)
-	httpL := m.Match(cmux.HTTP1Fast())
-	stratumL := m.Match(cmux.Any())
+	m, httpL, stratumL := splitPort(baseListener)
 
 	mux := http.NewServeMux()
 	apiHandler := web.NewDashboard(workManager, p2pNode, stratumSrv, startTime)
