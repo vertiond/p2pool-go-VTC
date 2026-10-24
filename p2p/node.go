@@ -67,6 +67,8 @@ type Node struct {
 	GetSyncDataFunc      func() ([]byte, []byte)
 	OnSyncDataFunc       func(sharesJSON []byte, blocksJSON []byte)
 	GetSharesByHashFunc  func(hashes []string, parents int, stops []string) []byte
+	GetMissingSharesFunc func() []string
+	GetStopHashesFunc    func() []string
 	GetTemplateFunc      func() []byte
 	OnTemplateFunc       func(peerID string, voterKey string, tmplJSON []byte)
 	OnRawBlockFunc       func(peerID string, rawHex string) bool
@@ -76,6 +78,7 @@ type Node struct {
 	peerMu               sync.RWMutex
 	peerFullMode         map[string]bool
 	peerVerifiedFull     map[string]bool
+	downloadWake         chan struct{}
 }
 
 type mdnsNotifee struct {
@@ -213,6 +216,7 @@ func NewNode(listenPort int, bindAddr string, disableUPnP bool) (*Node, error) {
 		IncomingShares:   make(chan []byte, 1000),
 		peerFullMode:     make(map[string]bool),
 		peerVerifiedFull: make(map[string]bool),
+		downloadWake:     make(chan struct{}, 1),
 	}
 
 	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
@@ -427,29 +431,6 @@ func (n *Node) handleShareReqStream(s network.Stream) {
 	_ = s.CloseWrite()
 }
 
-func (n *Node) RequestShares(hashes []string, parents int) {
-	if len(hashes) == 0 || n.OnSyncDataFunc == nil {
-		return
-	}
-	for _, pid := range n.Host.Network().Peers() {
-		ctx, cancel := context.WithTimeout(n.ctx, 15*time.Second)
-		s, err := n.Host.NewStream(ctx, pid, ShareReqProtocolID)
-		if err != nil {
-			cancel()
-			continue
-		}
-		_ = json.NewEncoder(s).Encode(ShareReq{Hashes: hashes, Parents: parents})
-		_ = s.CloseWrite()
-		var raw json.RawMessage
-		ok := json.NewDecoder(s).Decode(&raw) == nil && len(raw) > 4
-		s.Close()
-		cancel()
-		if ok {
-			n.OnSyncDataFunc(raw, nil)
-			return
-		}
-	}
-}
 func (n *Node) setPeerFullMode(pid string, isFull bool) {
 	n.peerMu.Lock()
 	n.peerFullMode[pid] = isFull
