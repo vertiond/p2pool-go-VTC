@@ -36,9 +36,13 @@ const PeerExProtocolID = protocol.ID("/p2pool/peers/1.0.0")
 const BlockCheckProtocolID = protocol.ID("/p2pool/blockcheck/1.0.0")
 const HeaderProofProtocolID = protocol.ID("/p2pool/headerproof/1.0.0")
 
+// ShareReq asks a peer for the shares in Hashes, each followed by up to Parents
+// ancestors. The walk back from each hash ends before any hash in Stops. Peers
+// that predate Stops ignore it.
 type ShareReq struct {
 	Hashes  []string `json:"hashes"`
 	Parents int      `json:"parents"`
+	Stops   []string `json:"stops,omitempty"`
 }
 
 const peerKeyFile = "peer.key"
@@ -62,7 +66,7 @@ type Node struct {
 	syncMutex            sync.Mutex
 	GetSyncDataFunc      func() ([]byte, []byte)
 	OnSyncDataFunc       func(sharesJSON []byte, blocksJSON []byte)
-	GetSharesByHashFunc  func(hashes []string, parents int) []byte
+	GetSharesByHashFunc  func(hashes []string, parents int, stops []string) []byte
 	GetTemplateFunc      func() []byte
 	OnTemplateFunc       func(peerID string, voterKey string, tmplJSON []byte)
 	OnRawBlockFunc       func(peerID string, rawHex string) bool
@@ -418,7 +422,7 @@ func (n *Node) handleShareReqStream(s network.Stream) {
 	if err := json.NewDecoder(s).Decode(&req); err != nil || len(req.Hashes) == 0 {
 		return
 	}
-	resp := n.GetSharesByHashFunc(req.Hashes, req.Parents)
+	resp := n.GetSharesByHashFunc(req.Hashes, req.Parents, req.Stops)
 	_, _ = s.Write(resp)
 	_ = s.CloseWrite()
 }
