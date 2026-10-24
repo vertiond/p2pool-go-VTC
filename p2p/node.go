@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"net"
@@ -61,7 +62,7 @@ type Node struct {
 	bootstrapPeers       []string
 	syncMutex            sync.Mutex
 	GetSyncDataFunc      func() ([]byte, []byte)
-	OnSyncDataFunc       func(sharesJSON []byte, blocksJSON []byte)
+	OnSyncDataFunc       func(sharesJSON []byte, blocksJSON []byte) int
 	GetSharesByHashFunc  func(hashes []string, parents int) []byte
 	GetTemplateFunc      func() []byte
 	OnTemplateFunc       func(peerID string, voterKey string, tmplJSON []byte)
@@ -72,7 +73,20 @@ type Node struct {
 	peerMu               sync.RWMutex
 	peerFullMode         map[string]bool
 	peerVerifiedFull     map[string]bool
+	syncReqMu            sync.Mutex
+	lastSyncReq          map[peer.ID]time.Time
+	syncReqBackoff       map[peer.ID]time.Duration
+	syncWarned           map[peer.ID]bool
 }
+
+// On-demand syncs (RequestSync) run at most once per syncRequestInterval per peer. The
+// interval doubles, up to maxSyncRequestInterval, while those syncs hydrate nothing.
+const (
+	syncRequestInterval    = 5 * time.Second
+	maxSyncRequestInterval = 2 * time.Minute
+)
+
+var errSyncBusy = errors.New("another sync is in progress")
 
 type mdnsNotifee struct {
 	n   *Node
@@ -209,6 +223,9 @@ func NewNode(listenPort int, bindAddr string, noNatPortMap bool) (*Node, error) 
 		IncomingShares:   make(chan []byte, 1000),
 		peerFullMode:     make(map[string]bool),
 		peerVerifiedFull: make(map[string]bool),
+		lastSyncReq:      make(map[peer.ID]time.Time),
+		syncReqBackoff:   make(map[peer.ID]time.Duration),
+		syncWarned:       make(map[peer.ID]bool),
 	}
 
 	h.SetStreamHandler(SyncProtocolID, node.handleSyncStream)
@@ -270,12 +287,14 @@ func (n *Node) handleSyncStream(s network.Stream) {
 	time.Sleep(500 * time.Millisecond)
 }
 
-func (n *Node) SyncWithPeer(pid peer.ID) {
+// SyncWithPeer exchanges sharechain sync payloads with pid and returns the number of
+// shares it hydrated.
+func (n *Node) SyncWithPeer(pid peer.ID) (int, error) {
 	if pid == n.Host.ID() || n.GetSyncDataFunc == nil || n.OnSyncDataFunc == nil {
-		return
+		return 0, nil
 	}
 	if !n.syncMutex.TryLock() {
-		return
+		return 0, errSyncBusy
 	}
 	defer n.syncMutex.Unlock()
 
@@ -284,8 +303,8 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 
 	s, err := n.Host.NewStream(ctx, pid, SyncProtocolID)
 	if err != nil {
-		logging.Debugf("P2P Sync: Peer %s stream open err: %v", pid, err)
-		return
+		n.logSyncFailure(pid, "stream open err: %v", err)
+		return 0, err
 	}
 	defer s.Close()
 
@@ -298,19 +317,70 @@ func (n *Node) SyncWithPeer(pid peer.ID) {
 		FullNode: n.GetTemplateFunc != nil,
 	}
 	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
-		logging.Debugf("P2P Sync: Failed sending sync request to %s: %v", pid, err)
-		return
+		n.logSyncFailure(pid, "failed sending sync request: %v", err)
+		return 0, err
 	}
 	_ = s.CloseWrite()
 
 	var incoming SyncPayload
 	if err := json.NewDecoder(s).Decode(&incoming); err != nil {
-		logging.Debugf("P2P Sync: Failed decoding sync response from %s: %v", pid, err)
-		return
+		n.logSyncFailure(pid, "failed decoding sync response: %v", err)
+		return 0, err
 	}
 	n.setPeerFullMode(pid.String(), incoming.FullNode)
 
-	n.OnSyncDataFunc(incoming.Shares, incoming.Blocks)
+	return n.OnSyncDataFunc(incoming.Shares, incoming.Blocks), nil
+}
+
+// logSyncFailure logs the first sync failure with a peer as a warning and later ones at
+// debug level.
+func (n *Node) logSyncFailure(pid peer.ID, format string, args ...interface{}) {
+	n.syncReqMu.Lock()
+	first := !n.syncWarned[pid]
+	n.syncWarned[pid] = true
+	n.syncReqMu.Unlock()
+	msg := fmt.Sprintf("P2P Sync: Peer %s %s", pid, fmt.Sprintf(format, args...))
+	if first {
+		logging.Warnf("%s", msg)
+	} else {
+		logging.Debugf("%s", msg)
+	}
+}
+
+// RequestSync starts a sync with peerID unless one was requested from it in the last
+// syncRequestInterval. Light mode calls it when the peer's template does not link to
+// the local sharechain.
+func (n *Node) RequestSync(peerID string) {
+	pid, err := peer.Decode(peerID)
+	if err != nil {
+		return
+	}
+	n.syncReqMu.Lock()
+	interval := n.syncReqBackoff[pid]
+	if interval == 0 {
+		interval = syncRequestInterval
+	}
+	if time.Since(n.lastSyncReq[pid]) < interval {
+		n.syncReqMu.Unlock()
+		return
+	}
+	n.lastSyncReq[pid] = time.Now()
+	n.syncReqMu.Unlock()
+	go func() {
+		added, err := n.SyncWithPeer(pid)
+		if errors.Is(err, errSyncBusy) {
+			return
+		}
+		n.syncReqMu.Lock()
+		if added > 0 {
+			n.syncReqBackoff[pid] = syncRequestInterval
+		} else if interval*2 <= maxSyncRequestInterval {
+			n.syncReqBackoff[pid] = interval * 2
+		} else {
+			n.syncReqBackoff[pid] = maxSyncRequestInterval
+		}
+		n.syncReqMu.Unlock()
+	}()
 }
 
 func (n *Node) periodicSyncLoop() {
@@ -370,7 +440,13 @@ func (n *Node) Bootstrap(bootstrapPeers []string) error {
 				logging.Warnf("P2P: Failed to connect to bootstrap peer %s: %v", pi.ID, err)
 			} else {
 				logging.Successf("P2P: Connected to bootstrap node: %s", pi.ID)
-				n.SyncWithPeer(pi.ID)
+				if _, err := n.SyncWithPeer(pi.ID); err != nil && !errors.Is(err, errSyncBusy) {
+					select {
+					case <-n.ctx.Done():
+					case <-time.After(3 * time.Second):
+						_, _ = n.SyncWithPeer(pi.ID)
+					}
+				}
 			}
 		}(*peerinfo)
 	}
