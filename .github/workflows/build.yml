@@ -81,7 +81,7 @@ jobs:
       - name: Build and package
         id: build
         env:
-          LDFLAGS: -X github.com/CADMonkey21/p2pool-go-VTC/config.Version=${{ steps.version.outputs.version }}
+          LDFLAGS: -s -w -X github.com/CADMonkey21/p2pool-go-VTC/config.Version=${{ steps.version.outputs.version }}
           NAME: ${{ steps.version.outputs.name }}
           BINARY: ${{ matrix.binary }}
           GOOS: ${{ matrix.os }}
