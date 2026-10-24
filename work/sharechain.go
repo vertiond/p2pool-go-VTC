@@ -231,8 +231,14 @@ func writeSharesJSON(path string, shares []Share) error {
 	return f.Close()
 }
 
-// GetSharesForSync returns up to maxCount most recent shares for fast P2P stream synchronization.
-func (sc *ShareChain) GetSharesForSync(maxCount int) []Share {
+// GetSharesForSync returns up to maxCount most recent shares for fast P2P stream
+// synchronization. The walk back from the tip stops before the first share in have,
+// which the requesting peer already holds.
+func (sc *ShareChain) GetSharesForSync(maxCount int, have []string) []Share {
+	stop := make(map[string]bool, len(have))
+	for _, h := range have {
+		stop[h] = true
+	}
 	sc.mutex.RLock()
 	defer sc.mutex.RUnlock()
 	vis := make(map[string]bool)
@@ -241,7 +247,7 @@ func (sc *ShareChain) GetSharesForSync(maxCount int) []Share {
 	nonStale := 0
 	for cur != nil && !cur.IsEqual(sc.genesisHash) {
 		h := cur.String()
-		if vis[h] {
+		if vis[h] || stop[h] {
 			break
 		}
 		sh := sc.shares[h]
@@ -259,6 +265,25 @@ func (sc *ShareChain) GetSharesForSync(maxCount int) []Share {
 		cur = sh.ShareInfo.ShareData.PreviousShareHash
 	}
 	return res
+}
+
+// GetTipChainHashes returns the hashes of up to maxCount shares walking back from the tip.
+func (sc *ShareChain) GetTipChainHashes(maxCount int) []string {
+	sc.mutex.RLock()
+	defer sc.mutex.RUnlock()
+	var out []string
+	vis := make(map[string]bool)
+	for cur := sc.TipHash; cur != nil && !cur.IsEqual(sc.genesisHash) && len(out) < maxCount; {
+		h := cur.String()
+		sh := sc.shares[h]
+		if sh == nil || vis[h] {
+			break
+		}
+		vis[h] = true
+		out = append(out, h)
+		cur = sh.ShareInfo.ShareData.PreviousShareHash
+	}
+	return out
 }
 
 const (
