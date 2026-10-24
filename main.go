@@ -194,8 +194,8 @@ func main() {
 	if config.Active.LightMode {
 		syncShareCount = 100
 	}
-	p2pNode.GetSyncDataFunc = func() ([]byte, []byte) {
-		shares := sc.GetSharesForSync(syncShareCount)
+	p2pNode.GetSyncDataFunc = func(have []string) ([]byte, []byte) {
+		shares := sc.GetSharesForSync(syncShareCount, have)
 		sBytes, _ := json.Marshal(shares)
 		bBytes := workManager.GetPersistedBlocksJSON()
 		return sBytes, bBytes
@@ -214,6 +214,7 @@ func main() {
 	if config.Active.LightMode {
 		p2pNode.OnTemplateFunc = func(p string, vk string, b []byte) { workManager.ApplyRemoteTemplateJSON(p, vk, b) }
 		workManager.OnUnlinkedTemplateFunc = p2pNode.RequestSync
+		p2pNode.GetSyncHaveFunc = func() []string { return sc.GetTipChainHashes(syncShareCount) }
 		logging.Infof("Running in daemon-less LIGHT MODE (receiving block templates via P2P)")
 		go func() {
 			for {

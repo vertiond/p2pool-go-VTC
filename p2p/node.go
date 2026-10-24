@@ -47,6 +47,9 @@ type SyncPayload struct {
 	Shares   json.RawMessage `json:"shares"`
 	Blocks   json.RawMessage `json:"blocks"`
 	FullNode bool            `json:"full_node,omitempty"`
+	// Have lists the hashes of the sender's newest tip-chain shares. A peer that
+	// understands it replies with only the shares above the first one listed.
+	Have []string `json:"have,omitempty"`
 }
 
 type Node struct {
@@ -60,7 +63,8 @@ type Node struct {
 	IncomingShares       chan []byte
 	bootstrapPeers       []string
 	syncMutex            sync.Mutex
-	GetSyncDataFunc      func() ([]byte, []byte)
+	GetSyncDataFunc      func(have []string) ([]byte, []byte)
+	GetSyncHaveFunc      func() []string
 	OnSyncDataFunc       func(sharesJSON []byte, blocksJSON []byte) int
 	GetSharesByHashFunc  func(hashes []string, parents int) []byte
 	GetTemplateFunc      func() []byte
@@ -226,7 +230,7 @@ func (n *Node) handleSyncStream(s network.Stream) {
 	n.setPeerFullMode(s.Conn().RemotePeer().String(), incoming.FullNode)
 	go n.OnSyncDataFunc(incoming.Shares, incoming.Blocks)
 
-	sharesJSON, blocksJSON := n.GetSyncDataFunc()
+	sharesJSON, blocksJSON := n.GetSyncDataFunc(incoming.Have)
 	outgoing := SyncPayload{
 		Shares:   sharesJSON,
 		Blocks:   blocksJSON,
@@ -263,11 +267,14 @@ func (n *Node) SyncWithPeer(pid peer.ID) (int, error) {
 
 	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
 
-	sharesJSON, blocksJSON := n.GetSyncDataFunc()
+	sharesJSON, blocksJSON := n.GetSyncDataFunc(nil)
 	outgoing := SyncPayload{
 		Shares:   sharesJSON,
 		Blocks:   blocksJSON,
 		FullNode: n.GetTemplateFunc != nil,
+	}
+	if n.GetSyncHaveFunc != nil {
+		outgoing.Have = n.GetSyncHaveFunc()
 	}
 	if err := json.NewEncoder(s).Encode(&outgoing); err != nil {
 		n.logSyncFailure(pid, "failed sending sync request: %v", err)
