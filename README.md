@@ -103,6 +103,26 @@ The pool is configured using a single `config.yaml` file (copied from `config.ex
 - **Bootstrap Peers (`-peers`):** Comma-separated libp2p multiaddrs, each ending in `/p2p/<PeerID>` (e.g. `-peers "/ip4/1.2.3.4/tcp/9348/p2p/12D3KooW...,/dns4/example.com/tcp/9348/p2p/12D3KooW..."`). When set, it replaces the built-in defaults and any `peers:` in `config.yaml`; invalid entries are logged and skipped.
 - **Readiness Endpoint (`/api/status`):** Returns JSON (`"ready": true`, `"has_template": true`, `"synced": true`, `"peers"`, `"shares_total"`, `"height"`) for One-Click Miner health checks.
 - **Dashboard Stats Endpoint (`/api/stats`):** Returns live hashrates, active miners, PPLNS payouts, and connected P2P peers.
+- **Prometheus Metrics (`/metrics`):** Served on the Stratum / Web port; see [Prometheus Metrics](#prometheus-metrics).
+
+### Prometheus Metrics
+Scrape `http://<your-node-ip>:9172/metrics`. Besides the Go runtime, process and `libp2p_*` metrics, the node exports:
+
+| Metric | Type | Description |
+| :--- | :--- | :--- |
+| `p2pool_sharechain_shares` | gauge | Shares held in the sharechain |
+| `p2pool_sharechain_verified_shares` | gauge | Verified shares held in the sharechain |
+| `p2pool_pool_share_difficulty` | gauge | Current pool share difficulty |
+| `p2pool_pool_hashrate` | gauge | Estimated pool hashrate (H/s), as in the stats log |
+| `p2pool_local_hashrate` | gauge | Hashrate of this node's miners (H/s) |
+| `p2pool_miners_connected` | gauge | Connected Stratum miners |
+| `p2pool_peers_connected` | gauge | Connected P2P peers |
+| `p2pool_uptime_seconds` | gauge | Node uptime |
+| `p2pool_stratum_shares_accepted_total` | counter | Stratum shares accepted |
+| `p2pool_stratum_shares_rejected_total{reason}` | counter | Stratum shares rejected: `stale`, `duplicate`, `low_diff`, `malformed`, `error` |
+| `p2pool_sharechain_shares_added_total{source}` | counter | Shares verified into the sharechain from `local` miners or `p2p` peers |
+| `p2pool_blocks_found_total{source}` | counter | Shares meeting the network target, from `local` miners or `p2p` peers |
+| `p2pool_block_submissions_total{result}` | counter | Local block submissions: `accepted`, `relayed` (light mode) or `failed` |
 
 See [LOG_GUIDE.md](LOG_GUIDE.md) for an overview of console log messages and levels.
 

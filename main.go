@@ -19,6 +19,7 @@ import (
 
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	"github.com/CADMonkey21/p2pool-go-VTC/metrics"
 	p2pnet "github.com/CADMonkey21/p2pool-go-VTC/net"
 	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
 	"github.com/CADMonkey21/p2pool-go-VTC/rpc"
@@ -230,6 +231,7 @@ func main() {
 			var ps []work.Share
 			if json.Unmarshal(sharesJSON, &ps) == nil && len(ps) > 0 {
 				if added := sc.AddShares(ps); added > 0 {
+					metrics.SharechainAdded.WithLabelValues("p2p").Add(float64(added))
 					logging.Successf("P2P Sync: Hydrated %d verified shares from peer!", added)
 					_ = sc.Commit()
 				}
@@ -272,10 +274,12 @@ func main() {
 			powInt := new(big.Int).SetBytes(remoteShare.POWHash.CloneBytes())
 			netTarget := blockchain.CompactToBig(remoteShare.MinHeader.Bits)
 			if added > 0 {
+				metrics.SharechainAdded.WithLabelValues("p2p").Add(float64(added))
 				stratumSrv.NotifyNewShare()
 				logging.Infof("P2P: Validated and added remote peer share %s to ShareChain", remoteShare.Hash.String()[:12])
 
 				if powInt.Cmp(netTarget) <= 0 {
+					metrics.BlocksFound.WithLabelValues("p2p").Inc()
 					select {
 					case sc.FoundBlockChan <- &remoteShare:
 					default:
@@ -299,6 +303,29 @@ func main() {
 	apiHandler := web.NewDashboard(workManager, p2pNode, stratumSrv, startTime)
 
 	mux.Handle("/api/stats", apiHandler)
+	metrics.RegisterStats(func() metrics.Stats {
+		stats := sc.GetStats()
+		local := stratumSrv.GetLocalHashrate()
+		peers := 0
+		if p2pNode.Host != nil {
+			peers = len(p2pNode.Host.Network().Peers())
+		}
+		pool := stats.PoolHashrate
+		if peers == 0 || local > pool {
+			pool = local
+		}
+		return metrics.Stats{
+			Shares:          stats.SharesTotal,
+			VerifiedShares:  sc.VerifiedCount(),
+			ShareDifficulty: sc.GetPoolShareDifficulty(),
+			PoolHashrate:    pool,
+			LocalHashrate:   local,
+			Miners:          len(stratumSrv.GetClients()),
+			Peers:           peers,
+			UptimeSeconds:   time.Since(startTime).Seconds(),
+		}
+	})
+	mux.Handle("/metrics", metrics.Handler())
 	shutdownChan := make(chan os.Signal, 1)
 	if ppid := config.Active.ParentPID; ppid > 0 {
 		go func() {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/CADMonkey21/p2pool-go-VTC/config"
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	"github.com/CADMonkey21/p2pool-go-VTC/metrics"
 	"github.com/CADMonkey21/p2pool-go-VTC/p2p"
 	"github.com/CADMonkey21/p2pool-go-VTC/work"
 	"github.com/btcsuite/btcd/blockchain"
@@ -320,6 +321,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	var params []string
 	if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) < 5 {
 		_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{25, "Malformed submission", nil}})
+		metrics.SharesRejected.WithLabelValues(metrics.RejectMalformed).Inc()
 		return
 	}
 
@@ -346,6 +348,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 	if isDup {
 		_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{22, "Duplicate share", nil}})
+		metrics.SharesRejected.WithLabelValues(metrics.RejectDuplicate).Inc()
 		c.Mutex.Lock()
 		c.RejectedShares++
 		c.Mutex.Unlock()
@@ -354,6 +357,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 
 	if !jobExists {
 		_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{21, "Stale share", nil}})
+		metrics.SharesRejected.WithLabelValues(metrics.RejectStale).Inc()
 		c.Mutex.Lock()
 		c.RejectedShares++
 		c.Mutex.Unlock()
@@ -384,6 +388,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	if err != nil {
 		logging.Errorf("Stratum: CreateShare error: %v", err)
 		_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{26, "Internal error", nil}})
+		metrics.SharesRejected.WithLabelValues(metrics.RejectError).Inc()
 		return
 	}
 
@@ -408,6 +413,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		c.Mutex.Unlock()
 		if dupH {
 			_ = c.send(JSONRPCResponse{ID: id, Error: []interface{}{22, "Duplicate share", nil}})
+			metrics.SharesRejected.WithLabelValues(metrics.RejectDuplicate).Inc()
 			c.Mutex.Lock()
 			c.RejectedShares++
 			c.Mutex.Unlock()
@@ -426,6 +432,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 	isStale := latestPrevHash != nil && !jobPrevHash.IsEqual(latestPrevHash)
 	if err := newShare.CalculateHashes(); err != nil || newShare.POWHash == nil {
 		_ = c.send(JSONRPCResponse{ID: id, Result: false})
+		metrics.SharesRejected.WithLabelValues(metrics.RejectError).Inc()
 		return
 	}
 	powInt := new(big.Int).SetBytes(newShare.POWHash.CloneBytes())
@@ -442,6 +449,7 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		c.Mutex.Lock()
 		c.AcceptedShares++
 		c.Mutex.Unlock()
+		metrics.SharesAccepted.Inc()
 		c.LocalRateMonitor.AddDatum(ShareDatum{Work: jobDifficulty, WorkerName: c.WorkerName})
 		nBits64, _ := strconv.ParseUint(job.BlockTemplate.Bits, 16, 32)
 		netTarget := blockchain.CompactToBig(uint32(nBits64))
@@ -453,7 +461,8 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 			if ok, r := newShare.IsValid(); ok {
 				logging.Infof("P2Pool Share qualified for network ShareChain! (Share Diff: %.4f >= Pool Share Diff: %.4f)", shareDiff, poolShareDiff)
 				go func(sh work.Share) {
-					if s.workManager.ShareChain.AddShares([]work.Share{sh}) > 0 {
+					if n := s.workManager.ShareChain.AddShares([]work.Share{sh}); n > 0 {
+						metrics.SharechainAdded.WithLabelValues("local").Add(float64(n))
 						s.NotifyNewShare()
 					}
 					if sb, err := json.Marshal(sh); err == nil && s.p2pNode != nil {
@@ -469,16 +478,25 @@ func (s *StratumServer) handleSubmit(c *Client, req *JSONRPCRequest) {
 		}
 		if powInt.Cmp(netTarget) <= 0 {
 			logging.Successf("!!!! BLOCK FOUND !!!! Share meets network target! Submitting to vertcoind...")
+			metrics.BlocksFound.WithLabelValues("local").Inc()
 			go func() {
+				result := "accepted"
 				if err := s.workManager.SubmitBlock(newShare, job.BlockTemplate); err != nil {
 					logging.Errorf("CRITICAL: Block submission failed: %v", err)
+					result = "failed"
+				} else if config.Active.LightMode {
+					result = "relayed"
 				}
+				metrics.BlockSubmissions.WithLabelValues(result).Inc()
 			}()
 		}
 	} else {
+		mr := metrics.RejectLowDiff
 		if isStale {
 			reason = "Stale share (DOA)"
+			mr = metrics.RejectStale
 		}
+		metrics.SharesRejected.WithLabelValues(mr).Inc()
 		logging.Warnf("Stratum: Share rejected – %s (Actual Diff: %.6f vs Needed: %.6f)", reason, shareDiff, jobDifficulty)
 		c.Mutex.Lock()
 		c.RejectedShares++
