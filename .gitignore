@@ -24,3 +24,7 @@ sharechain.db
 peer.key
 p2pool.log
 blocks.json
+
+# Guix build outputs and module cache
+guix-build-*/
+guix-cache/
