@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/CADMonkey21/p2pool-go-VTC/logging"
+	vh "github.com/vertcoin-project/verthash-go"
 )
 
 // Verthasher is an interface for a Verthash implementation.
@@ -16,12 +17,12 @@ type Verthasher interface {
 	Close()
 }
 
-// implementation is the primary Verthasher that uses the vendored functions.
+// implementation is the primary Verthasher, backed by verthash-go.
 type implementation struct {
-	hasherInstance *Verthash
+	hasherInstance *vh.Verthash
 }
 
-// New creates a Verthasher using the local (vendored) Verthash code.
+// New creates a Verthasher using github.com/vertcoin-project/verthash-go.
 func New(configuredDatFilePath string) (Verthasher, error) {
 	logging.Infof("Verthash: Initializing Verthasher...")
 
@@ -64,7 +65,7 @@ func New(configuredDatFilePath string) (Verthasher, error) {
 	}
 
 	keepInRam := true
-	hasher, err := NewVerthash(finalPathToUse, keepInRam)
+	hasher, err := vh.NewVerthash(finalPathToUse, keepInRam)
 	if err != nil {
 		return nil, fmt.Errorf("verthasher: failed to initialize with verthash.dat '%s': %w", finalPathToUse, err)
 	}
@@ -75,7 +76,7 @@ func New(configuredDatFilePath string) (Verthasher, error) {
 	}, nil
 }
 
-// Hash performs Verthash using the local (vendored) Verthash instance.
+// Hash performs Verthash using the verthash-go instance.
 func (v *implementation) Hash(headerData []byte) ([]byte, error) {
 	logging.Debugf("Verthash: Hashing share header.")
 	if v.hasherInstance == nil {
