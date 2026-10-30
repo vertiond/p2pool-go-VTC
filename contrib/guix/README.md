@@ -45,6 +45,11 @@ git tag -s v1.0.0 -m v1.0.0
 git push origin v1.0.0
 ```
 
+The tag starts the Guix workflow (`.github/workflows/guix.yml`), which builds
+the same zips on GitHub's runners, attests them, and puts them with their
+`SHA256SUMS` in a draft release for the tag. A cold run takes about an hour and
+a half.
+
 **2. Check out the tag in the Linux clone:**
 
 ```
@@ -79,8 +84,12 @@ to sign it. Then it copies four files to `Downloads\v1.0.0`:
 | `SHA256SUMS` | the SHA-256 of each zip and of the binary inside it |
 | `SHA256SUMS.asc` | your signature of `SHA256SUMS` |
 
-**5. Upload** those files to the GitHub release, in place of the
-`SHA256SUMS` the CI's draft release made.
+**5. Check the draft release and publish it.** Its `SHA256SUMS` is joined the
+way `guix-sign` joins it, so if the workflow's build matches yours it is the
+same file as yours, byte for byte. Compare them (for example
+`sha256sum SHA256SUMS` on both); if they differ, a build isn't reproducible and
+the release must wait. If they match, upload `SHA256SUMS.asc` to the draft and
+publish it.
 
 Anyone can check a release with `gpg --verify SHA256SUMS.asc` and
 `sha256sum --check --ignore-missing SHA256SUMS`.
